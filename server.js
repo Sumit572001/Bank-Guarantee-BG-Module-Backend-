@@ -186,7 +186,8 @@ const server = http.createServer(async (req, res) => {
                 processedAttachments.push({
                   originalName: saved.originalName,
                   filename: saved.filename,
-                  path: saved.path
+                  path: saved.path,
+                  category: file.category || 'General'
                 });
               }
             }
@@ -195,13 +196,19 @@ const server = http.createServer(async (req, res) => {
         
         const newRequest = {
           id: db.generateId('requests', 'REQ'),
+          requestType: body.requestType || 'New',
+          bgNumberToRenew: body.bgNumberToRenew || '',
+          registerIdToRenew: body.registerIdToRenew || '',
           projectRef: body.projectRef || 'General',
           bgType: body.bgType || 'EMD',
+          costCenter: body.costCenter || '',
           amount: parseFloat(body.amount) || 0,
           dueDate: body.dueDate || '',
           beneficiaryName: body.beneficiaryName || '',
           beneficiaryAddress: body.beneficiaryAddress || '',
-          beneficiaryBank: body.beneficiaryBank || '',
+          beneficiaryBankName: body.beneficiaryBankName || '',
+          beneficiaryBankAccount: body.beneficiaryBankAccount || '',
+          beneficiaryBankIfsc: body.beneficiaryBankIfsc || '',
           duration: body.duration || '',
           requestedBy: body.requestedBy || 'Unknown User',
           approvalsNeeded: body.approvalsNeeded || 'Finance',
@@ -242,41 +249,77 @@ const server = http.createServer(async (req, res) => {
         
         db.writeData('requests', requests);
         
-        // Workflow: If request is Approved, automatically generate a draft record in the official BG Register
+        // Workflow: If request is Approved, automatically generate register changes
         if (newStatus === 'Approved' && oldStatus !== 'Approved') {
           const register = db.readData('register');
           const request = requests[reqIndex];
           
-          // Generate new BG register entry
-          const newBg = {
-            id: db.generateId('register', 'BG'),
-            requestId: request.id,
-            bgNumber: '', // Issuing bank BG Number to be entered by Finance later
-            bgType: request.bgType,
-            beneficiary: request.beneficiaryName,
-            siteName: request.projectRef,
-            clientName: request.beneficiaryName,
-            issuingBank: request.beneficiaryBank || '',
-            issueDate: '',
-            effectiveDate: '',
-            expiryDate: '',
-            claimExpiryDate: '',
-            bgAmount: request.amount,
-            bgCommission: 0,
-            autoRenewal: false,
-            status: 'Active',
-            releasedDate: '',
-            remarks: `Automatically created from approved request ${request.id}. ${request.remarks}`,
-            attachments: request.attachments || [], // Copy attachments
-            marginMoney: 0,
-            fdrNo: '',
-            costCenter: '',
-            lastUpdatedBy: request.approvedBy,
-            lastUpdatedOn: new Date().toISOString()
-          };
-          
-          register.push(newBg);
-          db.writeData('register', register);
+          if (request.requestType === 'Renewal') {
+            // RENEWAL WORKFLOW: Add amendment history record to target BG instead of creating new BG entry
+            const bgIndex = register.findIndex(b => b.id === request.registerIdToRenew || (request.bgNumberToRenew && b.bgNumber === request.bgNumberToRenew));
+            if (bgIndex !== -1) {
+              const currentBg = register[bgIndex];
+              if (!currentBg.amendments) currentBg.amendments = [];
+              
+              const newAmendment = {
+                id: `AMD-${Date.now()}`,
+                date: new Date().toISOString().split('T')[0],
+                description: `Renewal Approved via Req ${request.id}. Details: ${request.remarks || ''}. Duration: ${request.duration || ''}`,
+                revisedAmount: currentBg.bgAmount,
+                revisedExpiryDate: request.dueDate,
+                revisedDuration: request.duration || '',
+                attachments: request.attachments || [] // Copy attachments from renewal request
+              };
+              
+              currentBg.amendments.push(newAmendment);
+              
+              // Update root properties of target BG
+              currentBg.expiryDate = request.dueDate;
+              const alertDates = calculateAlertDates(request.dueDate);
+              currentBg.renewalAlertDate = alertDates.alertDate;
+              currentBg.renewalInitiationDate = alertDates.initiationDate;
+              currentBg.remarks = `Renewed on ${newAmendment.date}: Extended to ${newAmendment.revisedExpiryDate}.\n` + (currentBg.remarks || '');
+              currentBg.lastUpdatedBy = request.approvedBy;
+              currentBg.lastUpdatedOn = new Date().toISOString();
+              
+              db.writeData('register', register);
+            }
+          } else {
+            // NEW BG WORKFLOW: Generate new BG register entry
+            const newBg = {
+              id: db.generateId('register', 'BG'),
+              requestId: request.id,
+              bgNumber: '', // Issuing bank BG Number to be entered by Finance later
+              bgType: request.bgType,
+              beneficiary: request.beneficiaryName,
+              siteName: request.projectRef,
+              clientName: request.beneficiaryAddress, // beneficiaryAddress used as client/recipient address
+              issuingBank: 'HDFC Bank', // Default select
+              issueDate: '',
+              effectiveDate: '',
+              expiryDate: '',
+              claimExpiryDate: '',
+              bgAmount: request.amount,
+              bgCommission: 0,
+              autoRenewal: false,
+              status: 'Active',
+              releasedDate: '',
+              remarks: `Automatically created from approved request ${request.id}. ${request.remarks}`,
+              attachments: request.attachments || [], // Copy attachments
+              marginMoney: 0,
+              fdrNo: '',
+              costCenter: request.costCenter || '',
+              beneficiaryBankName: request.beneficiaryBankName || '',
+              beneficiaryBankAccount: request.beneficiaryBankAccount || '',
+              beneficiaryBankIfsc: request.beneficiaryBankIfsc || '',
+              amendments: [],
+              lastUpdatedBy: request.approvedBy,
+              lastUpdatedOn: new Date().toISOString()
+            };
+            
+            register.push(newBg);
+            db.writeData('register', register);
+          }
         }
         
         sendJson(res, 200, { success: true, request: requests[reqIndex] });
@@ -305,7 +348,8 @@ const server = http.createServer(async (req, res) => {
                 processedAttachments.push({
                   originalName: saved.originalName,
                   filename: saved.filename,
-                  path: saved.path
+                  path: saved.path,
+                  category: file.category || 'General'
                 });
               }
             }
@@ -339,6 +383,7 @@ const server = http.createServer(async (req, res) => {
           marginMoney: parseFloat(body.marginMoney) || 0,
           fdrNo: body.fdrNo || '',
           costCenter: body.costCenter || '',
+          amendments: [],
           lastUpdatedBy: body.lastUpdatedBy || 'Authorized User',
           lastUpdatedOn: new Date().toISOString()
         };
@@ -365,7 +410,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         
-        // Handle new attachments to append
+        // Handle new attachments to append at root level
         const processedAttachments = [...(register[bgIndex].attachments || [])];
         if (body.newAttachments && Array.isArray(body.newAttachments)) {
           for (const file of body.newAttachments) {
@@ -375,10 +420,41 @@ const server = http.createServer(async (req, res) => {
                 processedAttachments.push({
                   originalName: saved.originalName,
                   filename: saved.filename,
-                  path: saved.path
+                  path: saved.path,
+                  category: file.category || 'General'
                 });
               }
             }
+          }
+        }
+        
+        // Handle processing of new base64 files within incoming amendments history
+        const processedAmendments = [];
+        const incomingAmendments = body.amendments || register[bgIndex].amendments || [];
+        if (Array.isArray(incomingAmendments)) {
+          for (const amd of incomingAmendments) {
+            const amdAttachments = [];
+            if (amd.attachments && Array.isArray(amd.attachments)) {
+              for (const file of amd.attachments) {
+                if (file.path) {
+                  amdAttachments.push(file);
+                } else if (file.name && file.data) {
+                  const saved = db.saveAttachment(file.name, file.data);
+                  if (saved.success) {
+                    amdAttachments.push({
+                      originalName: saved.originalName,
+                      filename: saved.filename,
+                      path: saved.path,
+                      category: 'Amendment'
+                    });
+                  }
+                }
+              }
+            }
+            processedAmendments.push({
+              ...amd,
+              attachments: amdAttachments
+            });
           }
         }
         
@@ -408,6 +484,7 @@ const server = http.createServer(async (req, res) => {
           marginMoney: body.marginMoney !== undefined ? parseFloat(body.marginMoney) : register[bgIndex].marginMoney,
           fdrNo: body.fdrNo !== undefined ? body.fdrNo : register[bgIndex].fdrNo,
           costCenter: body.costCenter !== undefined ? body.costCenter : register[bgIndex].costCenter,
+          amendments: processedAmendments,
           lastUpdatedBy: body.lastUpdatedBy || 'Authorized User',
           lastUpdatedOn: new Date().toISOString()
         };

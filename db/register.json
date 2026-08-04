@@ -1,0 +1,30 @@
+[
+  {
+    "id": "BG-2026-0001",
+    "requestId": "",
+    "bgNumber": "007GT02192490011",
+    "bgType": "Performance",
+    "beneficiary": "Maharashtra State Police Housing  and Welfare",
+    "siteName": "Goregaon, Mumbai",
+    "clientName": "Maharashtra State Police Housing  and Welfare",
+    "issuingBank": "HDFC Bank Ltd",
+    "issueDate": "2019-09-06",
+    "effectiveDate": "",
+    "expiryDate": "2027-03-05",
+    "claimExpiryDate": "2028-03-04",
+    "bgAmount": 78580000,
+    "bgCommission": 0,
+    "autoRenewal": false,
+    "status": "Active",
+    "renewalAlertDate": "2027-02-03",
+    "renewalInitiationDate": "2027-02-18",
+    "releasedDate": "",
+    "remarks": "",
+    "attachments": [],
+    "marginMoney": 0,
+    "fdrNo": "",
+    "costCenter": "",
+    "lastUpdatedBy": "Finance Manager (Sumit Verma)",
+    "lastUpdatedOn": "2026-08-04T09:34:06.860Z"
+  }
+]

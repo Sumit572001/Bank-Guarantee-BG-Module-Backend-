@@ -1,0 +1,12 @@
+{
+  "name": "bg-backend",
+  "version": "1.0.0",
+  "description": "Bank Guarantee Module Backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "mongodb": "^6.8.0"
+  }
+}

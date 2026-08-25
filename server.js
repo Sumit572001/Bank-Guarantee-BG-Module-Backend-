@@ -5,7 +5,9 @@ const url = require('url');
 const db = require('./db');
 
 const PORT = 8080;
-const FRONTEND_DIR = path.join(__dirname, '..', 'Frontend');
+const FRONTEND_DIR = fs.existsSync(path.join(__dirname, '..', 'BG-Frontend'))
+  ? path.join(__dirname, '..', 'BG-Frontend')
+  : path.join(__dirname, '..', 'Frontend');
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -91,10 +93,46 @@ const server = http.createServer(async (req, res) => {
   // --- API ROUTES ---
   if (reqPath.startsWith('/api/')) {
     try {
+      // POST /api/auth/login
+      if (reqPath === '/api/auth/login' && method === 'POST') {
+        const body = await getJsonBody(req);
+        const username = String(body.username || '').trim().toLowerCase();
+        const password = String(body.password || '');
+        
+        if (!username || !password) {
+          sendJson(res, 400, { success: false, error: 'Username/Email and Password are required.' });
+          return;
+        }
+        
+        const user = await db.findOne('users', {
+          $or: [
+            { username: username },
+            { email: username }
+          ]
+        });
+        
+        if (!user || user.password !== password) {
+          sendJson(res, 401, { success: false, error: 'Invalid Username/Email or Password.' });
+          return;
+        }
+        
+        sendJson(res, 200, {
+          success: true,
+          user: {
+            username: user.username,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            isLoggedIn: true
+          }
+        });
+        return;
+      }
+
       // GET Dashboard Aggregates
       if (reqPath === '/api/dashboard' && method === 'GET') {
-        const requests = db.readData('requests');
-        const register = db.readData('register');
+        const requests = await db.readData('requests');
+        const register = await db.readData('register');
         
         const now = new Date();
         const thirtyDaysFromNow = new Date();
@@ -166,7 +204,7 @@ const server = http.createServer(async (req, res) => {
       
       // GET /api/requests
       if (reqPath === '/api/requests' && method === 'GET') {
-        const requests = db.readData('requests');
+        const requests = await db.readData('requests');
         sendJson(res, 200, requests);
         return;
       }
@@ -174,7 +212,6 @@ const server = http.createServer(async (req, res) => {
       // POST /api/requests
       if (reqPath === '/api/requests' && method === 'POST') {
         const body = await getJsonBody(req);
-        const requests = db.readData('requests');
         
         // Handle attachments if any (Base64 file structures)
         const processedAttachments = [];
@@ -195,7 +232,7 @@ const server = http.createServer(async (req, res) => {
         }
         
         const newRequest = {
-          id: db.generateId('requests', 'REQ'),
+          id: await db.generateId('requests', 'REQ'),
           requestType: body.requestType || 'New',
           bgNumberToRenew: body.bgNumberToRenew || '',
           registerIdToRenew: body.registerIdToRenew || '',
@@ -218,8 +255,7 @@ const server = http.createServer(async (req, res) => {
           attachments: processedAttachments
         };
         
-        requests.push(newRequest);
-        db.writeData('requests', requests);
+        await db.insertDocument('requests', newRequest);
         sendJson(res, 201, { success: true, request: newRequest });
         return;
       }
@@ -232,27 +268,33 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         
-        const requests = db.readData('requests');
-        const reqIndex = requests.findIndex(r => r.id === body.id);
+        const requests = await db.readData('requests');
+        const request = requests.find(r => r.id === body.id);
         
-        if (reqIndex === -1) {
+        if (!request) {
           sendJson(res, 404, { success: false, error: 'Request not found' });
           return;
         }
         
-        const oldStatus = requests[reqIndex].status;
+        const oldStatus = request.status;
         const newStatus = body.status;
         
-        requests[reqIndex].status = newStatus;
-        requests[reqIndex].approvedBy = body.approvedBy || 'Manager';
-        requests[reqIndex].approvedOn = new Date().toISOString();
+        const approvedBy = body.approvedBy || 'Manager';
+        const approvedOn = new Date().toISOString();
         
-        db.writeData('requests', requests);
+        await db.updateDocument('requests', { id: body.id }, {
+          status: newStatus,
+          approvedBy: approvedBy,
+          approvedOn: approvedOn
+        });
+        
+        request.status = newStatus;
+        request.approvedBy = approvedBy;
+        request.approvedOn = approvedOn;
         
         // Workflow: If request is Approved, automatically generate register changes
         if (newStatus === 'Approved' && oldStatus !== 'Approved') {
-          const register = db.readData('register');
-          const request = requests[reqIndex];
+          const register = await db.readData('register');
           
           if (request.requestType === 'Renewal') {
             // RENEWAL WORKFLOW: Add amendment history record to target BG instead of creating new BG entry
@@ -274,20 +316,23 @@ const server = http.createServer(async (req, res) => {
               currentBg.amendments.push(newAmendment);
               
               // Update root properties of target BG
-              currentBg.expiryDate = request.dueDate;
               const alertDates = calculateAlertDates(request.dueDate);
-              currentBg.renewalAlertDate = alertDates.alertDate;
-              currentBg.renewalInitiationDate = alertDates.initiationDate;
-              currentBg.remarks = `Renewed on ${newAmendment.date}: Extended to ${newAmendment.revisedExpiryDate}.\n` + (currentBg.remarks || '');
-              currentBg.lastUpdatedBy = request.approvedBy;
-              currentBg.lastUpdatedOn = new Date().toISOString();
+              const remarks = `Renewed on ${newAmendment.date}: Extended to ${newAmendment.revisedExpiryDate}.\n` + (currentBg.remarks || '');
               
-              db.writeData('register', register);
+              await db.updateDocument('register', { id: currentBg.id }, {
+                amendments: currentBg.amendments,
+                expiryDate: request.dueDate,
+                renewalAlertDate: alertDates.alertDate,
+                renewalInitiationDate: alertDates.initiationDate,
+                remarks: remarks,
+                lastUpdatedBy: request.approvedBy,
+                lastUpdatedOn: new Date().toISOString()
+              });
             }
           } else {
             // NEW BG WORKFLOW: Generate new BG register entry
             const newBg = {
-              id: db.generateId('register', 'BG'),
+              id: await db.generateId('register', 'BG'),
               requestId: request.id,
               bgNumber: '', // Issuing bank BG Number to be entered by Finance later
               bgType: request.bgType,
@@ -317,18 +362,17 @@ const server = http.createServer(async (req, res) => {
               lastUpdatedOn: new Date().toISOString()
             };
             
-            register.push(newBg);
-            db.writeData('register', register);
+            await db.insertDocument('register', newBg);
           }
         }
         
-        sendJson(res, 200, { success: true, request: requests[reqIndex] });
+        sendJson(res, 200, { success: true, request: request });
         return;
       }
       
       // GET /api/register
       if (reqPath === '/api/register' && method === 'GET') {
-        const register = db.readData('register');
+        const register = await db.readData('register');
         sendJson(res, 200, register);
         return;
       }
@@ -336,7 +380,6 @@ const server = http.createServer(async (req, res) => {
       // POST /api/register (Manual Entry)
       if (reqPath === '/api/register' && method === 'POST') {
         const body = await getJsonBody(req);
-        const register = db.readData('register');
         
         // Handle attachments if any
         const processedAttachments = [];
@@ -359,7 +402,7 @@ const server = http.createServer(async (req, res) => {
         const alertDates = calculateAlertDates(body.expiryDate);
         
         const newBg = {
-          id: db.generateId('register', 'BG'),
+          id: await db.generateId('register', 'BG'),
           requestId: body.requestId || '',
           bgNumber: body.bgNumber || '',
           bgType: body.bgType || 'EMD',
@@ -388,8 +431,7 @@ const server = http.createServer(async (req, res) => {
           lastUpdatedOn: new Date().toISOString()
         };
         
-        register.push(newBg);
-        db.writeData('register', register);
+        await db.insertDocument('register', newBg);
         sendJson(res, 201, { success: true, bg: newBg });
         return;
       }
@@ -402,16 +444,16 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         
-        const register = db.readData('register');
-        const bgIndex = register.findIndex(b => b.id === body.id);
+        const register = await db.readData('register');
+        const bgEntry = register.find(b => b.id === body.id);
         
-        if (bgIndex === -1) {
+        if (!bgEntry) {
           sendJson(res, 404, { success: false, error: 'BG entry not found' });
           return;
         }
         
         // Handle new attachments to append at root level
-        const processedAttachments = [...(register[bgIndex].attachments || [])];
+        const processedAttachments = [...(bgEntry.attachments || [])];
         if (body.newAttachments && Array.isArray(body.newAttachments)) {
           for (const file of body.newAttachments) {
             if (file.name && file.data) {
@@ -430,7 +472,7 @@ const server = http.createServer(async (req, res) => {
         
         // Handle processing of new base64 files within incoming amendments history
         const processedAmendments = [];
-        const incomingAmendments = body.amendments || register[bgIndex].amendments || [];
+        const incomingAmendments = body.amendments || bgEntry.amendments || [];
         if (Array.isArray(incomingAmendments)) {
           for (const amd of incomingAmendments) {
             const amdAttachments = [];
@@ -460,37 +502,36 @@ const server = http.createServer(async (req, res) => {
         
         const alertDates = calculateAlertDates(body.expiryDate);
         
-        register[bgIndex] = {
-          ...register[bgIndex],
-          bgNumber: body.bgNumber !== undefined ? body.bgNumber : register[bgIndex].bgNumber,
-          bgType: body.bgType || register[bgIndex].bgType,
-          beneficiary: body.beneficiary || register[bgIndex].beneficiary,
-          siteName: body.siteName || register[bgIndex].siteName,
-          clientName: body.clientName || register[bgIndex].clientName,
-          issuingBank: body.issuingBank || register[bgIndex].issuingBank,
-          issueDate: body.issueDate !== undefined ? body.issueDate : register[bgIndex].issueDate,
-          effectiveDate: body.effectiveDate !== undefined ? body.effectiveDate : register[bgIndex].effectiveDate,
-          expiryDate: body.expiryDate !== undefined ? body.expiryDate : register[bgIndex].expiryDate,
-          claimExpiryDate: body.claimExpiryDate !== undefined ? body.claimExpiryDate : register[bgIndex].claimExpiryDate,
-          bgAmount: body.bgAmount !== undefined ? parseFloat(body.bgAmount) : register[bgIndex].bgAmount,
-          bgCommission: body.bgCommission !== undefined ? parseFloat(body.bgCommission) : register[bgIndex].bgCommission,
-          autoRenewal: body.autoRenewal !== undefined ? !!body.autoRenewal : register[bgIndex].autoRenewal,
-          status: body.status || register[bgIndex].status,
+        const updatedBg = {
+          bgNumber: body.bgNumber !== undefined ? body.bgNumber : bgEntry.bgNumber,
+          bgType: body.bgType || bgEntry.bgType,
+          beneficiary: body.beneficiary || bgEntry.beneficiary,
+          siteName: body.siteName || bgEntry.siteName,
+          clientName: body.clientName || bgEntry.clientName,
+          issuingBank: body.issuingBank || bgEntry.issuingBank,
+          issueDate: body.issueDate !== undefined ? body.issueDate : bgEntry.issueDate,
+          effectiveDate: body.effectiveDate !== undefined ? body.effectiveDate : bgEntry.effectiveDate,
+          expiryDate: body.expiryDate !== undefined ? body.expiryDate : bgEntry.expiryDate,
+          claimExpiryDate: body.claimExpiryDate !== undefined ? body.claimExpiryDate : bgEntry.claimExpiryDate,
+          bgAmount: body.bgAmount !== undefined ? parseFloat(body.bgAmount) : bgEntry.bgAmount,
+          bgCommission: body.bgCommission !== undefined ? parseFloat(body.bgCommission) : bgEntry.bgCommission,
+          autoRenewal: body.autoRenewal !== undefined ? !!body.autoRenewal : bgEntry.autoRenewal,
+          status: body.status || bgEntry.status,
           renewalAlertDate: alertDates.alertDate,
           renewalInitiationDate: alertDates.initiationDate,
-          releasedDate: body.releasedDate !== undefined ? body.releasedDate : register[bgIndex].releasedDate,
-          remarks: body.remarks !== undefined ? body.remarks : register[bgIndex].remarks,
+          releasedDate: body.releasedDate !== undefined ? body.releasedDate : bgEntry.releasedDate,
+          remarks: body.remarks !== undefined ? body.remarks : bgEntry.remarks,
           attachments: processedAttachments,
-          marginMoney: body.marginMoney !== undefined ? parseFloat(body.marginMoney) : register[bgIndex].marginMoney,
-          fdrNo: body.fdrNo !== undefined ? body.fdrNo : register[bgIndex].fdrNo,
-          costCenter: body.costCenter !== undefined ? body.costCenter : register[bgIndex].costCenter,
+          marginMoney: body.marginMoney !== undefined ? parseFloat(body.marginMoney) : bgEntry.marginMoney,
+          fdrNo: body.fdrNo !== undefined ? body.fdrNo : bgEntry.fdrNo,
+          costCenter: body.costCenter !== undefined ? body.costCenter : bgEntry.costCenter,
           amendments: processedAmendments,
           lastUpdatedBy: body.lastUpdatedBy || 'Authorized User',
           lastUpdatedOn: new Date().toISOString()
         };
         
-        db.writeData('register', register);
-        sendJson(res, 200, { success: true, bg: register[bgIndex] });
+        await db.updateDocument('register', { id: body.id }, updatedBg);
+        sendJson(res, 200, { success: true, bg: { ...bgEntry, ...updatedBg } });
         return;
       }
       
@@ -556,14 +597,28 @@ function getLocalIpAddress() {
   return null;
 }
 
-server.listen(PORT, '0.0.0.0', () => {
-  const localIp = getLocalIpAddress();
-  console.log(`=======================================================`);
-  console.log(`  Bank Guarantee Module Server started successfully!   `);
-  console.log(`=======================================================`);
-  console.log(`Local URL:         http://localhost:${PORT}/`);
-  if (localIp) {
-    console.log(`Local Network URL: http://${localIp}:${PORT}/`);
+// Wrap server startup to connect and initialize database first
+async function startServer() {
+  try {
+    // Connect to database and run automatic migration of JSON data if required
+    await db.initializeDb();
+    
+    // Start listening on port
+    server.listen(PORT, '0.0.0.0', () => {
+      const localIp = getLocalIpAddress();
+      console.log(`=======================================================`);
+      console.log(`  Bank Guarantee Module Server started successfully!   `);
+      console.log(`=======================================================`);
+      console.log(`Local URL:         http://localhost:${PORT}/`);
+      if (localIp) {
+        console.log(`Local Network URL: http://${localIp}:${PORT}/`);
+      }
+      console.log(`=======================================================`);
+    });
+  } catch (error) {
+    console.error('Failed to initialize database. Server cannot start.', error);
+    process.exit(1);
   }
-  console.log(`=======================================================`);
-});
+}
+
+startServer();

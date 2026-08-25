@@ -3,7 +3,11 @@
 
 $port = 8080
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$FrontendDir = Join-Path (Split-Path -Parent $ScriptDir) "Frontend"
+$parentDir = Split-Path -Parent $ScriptDir
+$FrontendDir = Join-Path $parentDir "BG-Frontend"
+if (!(Test-Path $FrontendDir)) {
+    $FrontendDir = Join-Path $parentDir "Frontend"
+}
 $DbDir = Join-Path $ScriptDir "db"
 $UploadsDir = Join-Path $ScriptDir "uploads"
 

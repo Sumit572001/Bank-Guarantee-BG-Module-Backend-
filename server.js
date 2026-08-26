@@ -4,7 +4,7 @@ const path = require('path');
 const url = require('url');
 const db = require('./db');
 
-const PORT = 8080;
+const PORT = process.env.PORT || 8080;
 const FRONTEND_DIR = fs.existsSync(path.join(__dirname, '..', 'BG-Frontend'))
   ? path.join(__dirname, '..', 'BG-Frontend')
   : path.join(__dirname, '..', 'Frontend');
@@ -54,18 +54,18 @@ function sendJson(res, statusCode, data) {
 // Helper to auto-calculate alert dates based on expiry
 function calculateAlertDates(expiryDateStr) {
   if (!expiryDateStr) return { alertDate: '', initiationDate: '' };
-  
+
   const expiry = new Date(expiryDateStr);
   if (isNaN(expiry.getTime())) return { alertDate: '', initiationDate: '' };
-  
+
   // Renewal Alert: 30 days before expiry
   const alert = new Date(expiry);
   alert.setDate(expiry.getDate() - 30);
-  
+
   // Renewal Initiation: 15 days before expiry
   const initiation = new Date(expiry);
   initiation.setDate(expiry.getDate() - 15);
-  
+
   return {
     alertDate: alert.toISOString().split('T')[0],
     initiationDate: initiation.toISOString().split('T')[0]
@@ -98,24 +98,24 @@ const server = http.createServer(async (req, res) => {
         const body = await getJsonBody(req);
         const username = String(body.username || '').trim().toLowerCase();
         const password = String(body.password || '');
-        
+
         if (!username || !password) {
           sendJson(res, 400, { success: false, error: 'Username/Email and Password are required.' });
           return;
         }
-        
+
         const user = await db.findOne('users', {
           $or: [
             { username: username },
             { email: username }
           ]
         });
-        
+
         if (!user || user.password !== password) {
           sendJson(res, 401, { success: false, error: 'Invalid Username/Email or Password.' });
           return;
         }
-        
+
         sendJson(res, 200, {
           success: true,
           user: {
@@ -133,11 +133,11 @@ const server = http.createServer(async (req, res) => {
       if (reqPath === '/api/dashboard' && method === 'GET') {
         const requests = await db.readData('requests');
         const register = await db.readData('register');
-        
+
         const now = new Date();
         const thirtyDaysFromNow = new Date();
         thirtyDaysFromNow.setDate(now.getDate() + 30);
-        
+
         let outstandingCount = 0;
         let totalAmount = 0;
         let totalMarginMoney = 0;
@@ -146,17 +146,17 @@ const server = http.createServer(async (req, res) => {
         let cancelledCount = 0;
         let expiredCount = 0;
         let urgentCount = 0;
-        
+
         register.forEach(bg => {
           const bgAmount = parseFloat(bg.bgAmount) || 0;
           const bgMargin = parseFloat(bg.marginMoney) || 0;
-          
+
           if (bg.status === 'Active') {
             activeCount++;
             outstandingCount++;
             totalAmount += bgAmount;
             totalMarginMoney += bgMargin;
-            
+
             // Check if expiring within 30 days
             if (bg.expiryDate) {
               const expDate = new Date(bg.expiryDate);
@@ -179,14 +179,14 @@ const server = http.createServer(async (req, res) => {
             cancelledCount++;
           }
         });
-        
+
         const pendingRequestsCount = requests.filter(r => r.status === 'Pending').length;
-        
+
         // Return summary and recent 5 registered BGs
         const recentBgs = [...register]
           .sort((a, b) => new Date(b.lastUpdatedOn || 0) - new Date(a.lastUpdatedOn || 0))
           .slice(0, 5);
-          
+
         sendJson(res, 200, {
           outstandingCount,
           totalAmount,
@@ -201,18 +201,18 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
-      
+
       // GET /api/requests
       if (reqPath === '/api/requests' && method === 'GET') {
         const requests = await db.readData('requests');
         sendJson(res, 200, requests);
         return;
       }
-      
+
       // POST /api/requests
       if (reqPath === '/api/requests' && method === 'POST') {
         const body = await getJsonBody(req);
-        
+
         // Handle attachments if any (Base64 file structures)
         const processedAttachments = [];
         if (body.attachments && Array.isArray(body.attachments)) {
@@ -230,7 +230,7 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-        
+
         const newRequest = {
           id: await db.generateId('requests', 'REQ'),
           requestType: body.requestType || 'New',
@@ -254,12 +254,12 @@ const server = http.createServer(async (req, res) => {
           createdAt: new Date().toISOString(),
           attachments: processedAttachments
         };
-        
+
         await db.insertDocument('requests', newRequest);
         sendJson(res, 201, { success: true, request: newRequest });
         return;
       }
-      
+
       // PUT /api/requests (Approvals / Status Updates)
       if (reqPath === '/api/requests' && method === 'PUT') {
         const body = await getJsonBody(req);
@@ -267,42 +267,42 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 400, { success: false, error: 'Request ID is required' });
           return;
         }
-        
+
         const requests = await db.readData('requests');
         const request = requests.find(r => r.id === body.id);
-        
+
         if (!request) {
           sendJson(res, 404, { success: false, error: 'Request not found' });
           return;
         }
-        
+
         const oldStatus = request.status;
         const newStatus = body.status;
-        
+
         const approvedBy = body.approvedBy || 'Manager';
         const approvedOn = new Date().toISOString();
-        
+
         await db.updateDocument('requests', { id: body.id }, {
           status: newStatus,
           approvedBy: approvedBy,
           approvedOn: approvedOn
         });
-        
+
         request.status = newStatus;
         request.approvedBy = approvedBy;
         request.approvedOn = approvedOn;
-        
+
         // Workflow: If request is Approved, automatically generate register changes
         if (newStatus === 'Approved' && oldStatus !== 'Approved') {
           const register = await db.readData('register');
-          
+
           if (request.requestType === 'Renewal') {
             // RENEWAL WORKFLOW: Add amendment history record to target BG instead of creating new BG entry
             const bgIndex = register.findIndex(b => b.id === request.registerIdToRenew || (request.bgNumberToRenew && b.bgNumber === request.bgNumberToRenew));
             if (bgIndex !== -1) {
               const currentBg = register[bgIndex];
               if (!currentBg.amendments) currentBg.amendments = [];
-              
+
               const newAmendment = {
                 id: `AMD-${Date.now()}`,
                 date: new Date().toISOString().split('T')[0],
@@ -312,13 +312,13 @@ const server = http.createServer(async (req, res) => {
                 revisedDuration: request.duration || '',
                 attachments: request.attachments || [] // Copy attachments from renewal request
               };
-              
+
               currentBg.amendments.push(newAmendment);
-              
+
               // Update root properties of target BG
               const alertDates = calculateAlertDates(request.dueDate);
               const remarks = `Renewed on ${newAmendment.date}: Extended to ${newAmendment.revisedExpiryDate}.\n` + (currentBg.remarks || '');
-              
+
               await db.updateDocument('register', { id: currentBg.id }, {
                 amendments: currentBg.amendments,
                 expiryDate: request.dueDate,
@@ -361,26 +361,26 @@ const server = http.createServer(async (req, res) => {
               lastUpdatedBy: request.approvedBy,
               lastUpdatedOn: new Date().toISOString()
             };
-            
+
             await db.insertDocument('register', newBg);
           }
         }
-        
+
         sendJson(res, 200, { success: true, request: request });
         return;
       }
-      
+
       // GET /api/register
       if (reqPath === '/api/register' && method === 'GET') {
         const register = await db.readData('register');
         sendJson(res, 200, register);
         return;
       }
-      
+
       // POST /api/register (Manual Entry)
       if (reqPath === '/api/register' && method === 'POST') {
         const body = await getJsonBody(req);
-        
+
         // Handle attachments if any
         const processedAttachments = [];
         if (body.attachments && Array.isArray(body.attachments)) {
@@ -398,9 +398,9 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-        
+
         const alertDates = calculateAlertDates(body.expiryDate);
-        
+
         const newBg = {
           id: await db.generateId('register', 'BG'),
           requestId: body.requestId || '',
@@ -430,12 +430,12 @@ const server = http.createServer(async (req, res) => {
           lastUpdatedBy: body.lastUpdatedBy || 'Authorized User',
           lastUpdatedOn: new Date().toISOString()
         };
-        
+
         await db.insertDocument('register', newBg);
         sendJson(res, 201, { success: true, bg: newBg });
         return;
       }
-      
+
       // PUT /api/register (Update BG)
       if (reqPath === '/api/register' && method === 'PUT') {
         const body = await getJsonBody(req);
@@ -443,15 +443,15 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 400, { success: false, error: 'Register Entry ID is required' });
           return;
         }
-        
+
         const register = await db.readData('register');
         const bgEntry = register.find(b => b.id === body.id);
-        
+
         if (!bgEntry) {
           sendJson(res, 404, { success: false, error: 'BG entry not found' });
           return;
         }
-        
+
         // Handle new attachments to append at root level
         const processedAttachments = [...(bgEntry.attachments || [])];
         if (body.newAttachments && Array.isArray(body.newAttachments)) {
@@ -469,7 +469,7 @@ const server = http.createServer(async (req, res) => {
             }
           }
         }
-        
+
         // Handle processing of new base64 files within incoming amendments history
         const processedAmendments = [];
         const incomingAmendments = body.amendments || bgEntry.amendments || [];
@@ -499,9 +499,9 @@ const server = http.createServer(async (req, res) => {
             });
           }
         }
-        
+
         const alertDates = calculateAlertDates(body.expiryDate);
-        
+
         const updatedBg = {
           bgNumber: body.bgNumber !== undefined ? body.bgNumber : bgEntry.bgNumber,
           bgType: body.bgType || bgEntry.bgType,
@@ -529,12 +529,12 @@ const server = http.createServer(async (req, res) => {
           lastUpdatedBy: body.lastUpdatedBy || 'Authorized User',
           lastUpdatedOn: new Date().toISOString()
         };
-        
+
         await db.updateDocument('register', { id: body.id }, updatedBg);
         sendJson(res, 200, { success: true, bg: { ...bgEntry, ...updatedBg } });
         return;
       }
-      
+
       // Fallback API route
       sendJson(res, 404, { error: 'API Endpoint not found' });
       return;
@@ -547,7 +547,7 @@ const server = http.createServer(async (req, res) => {
 
   // --- STATIC FILE SERVING ---
   let filePath = path.join(FRONTEND_DIR, reqPath === '/' ? 'index.html' : reqPath);
-  
+
   // Serve uploads from Backend directory
   if (reqPath.startsWith('/uploads/')) {
     filePath = path.join(__dirname, reqPath);
@@ -602,7 +602,7 @@ async function startServer() {
   try {
     // Connect to database and run automatic migration of JSON data if required
     await db.initializeDb();
-    
+
     // Start listening on port
     server.listen(PORT, '0.0.0.0', () => {
       const localIp = getLocalIpAddress();

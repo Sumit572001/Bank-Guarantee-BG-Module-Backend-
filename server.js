@@ -11,12 +11,6 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // URL Normalization Middleware (Strip IIS subpath /Bank_Guarantee_Module if present)
-app.use((req, res, next) => {
-  if (req.url.toLowerCase().startsWith('/bank_guarantee_module')) {
-    req.url = req.url.replace(/^\/Bank_Guarantee_Module/i, '') || '/';
-  }
-  next();
-});
 
 // CORS Middleware
 app.use((req, res, next) => {

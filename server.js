@@ -5,14 +5,8 @@ const url = require('url');
 const db = require('./db');
 
 const PORT = process.env.PORT || 8080;
-const FRONTEND_DIR = fs.existsSync(path.join(__dirname, '..', 'BG-Frontend'))
-  ? path.join(__dirname, '..', 'BG-Frontend')
-  : path.join(__dirname, '..', 'Frontend');
 
 const MIME_TYPES = {
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'text/javascript',
   '.json': 'application/json',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -94,6 +88,17 @@ const server = http.createServer(async (req, res) => {
   // --- API ROUTES ---
   if (reqPath.startsWith('/api/')) {
     try {
+      // GET /api/test - Check if backend is working
+      if (reqPath === '/api/test' && method === 'GET') {
+        sendJson(res, 200, {
+          success: true,
+          message: 'Backend is working successfully',
+          status: 'healthy',
+          timestamp: new Date().toISOString()
+        });
+        return;
+      }
+
       // POST /api/auth/login
       if (reqPath === '/api/auth/login' && method === 'POST') {
         const body = await getJsonBody(req);
@@ -546,43 +551,32 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // --- STATIC FILE SERVING ---
-  let filePath = path.join(FRONTEND_DIR, reqPath === '/' ? 'index.html' : reqPath);
-
-  // Serve uploads from Backend directory
+  // --- STATIC FILE SERVING (Uploads Only) ---
   if (reqPath.startsWith('/uploads/')) {
-    filePath = path.join(__dirname, reqPath);
-  }
+    const filePath = path.join(__dirname, reqPath);
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
 
-  const ext = path.extname(filePath).toLowerCase();
-  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    fs.stat(filePath, (err, stats) => {
+      if (err || !stats.isFile()) {
+        sendJson(res, 404, { error: 'File not found' });
+        return;
+      }
 
-  fs.stat(filePath, (err, stats) => {
-    if (err || !stats.isFile()) {
-      // If static file not found, fall back to index.html for client-side routing
-      const indexPath = path.join(FRONTEND_DIR, 'index.html');
-      fs.readFile(indexPath, (err2, content) => {
-        if (err2) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('404 Not Found');
+      fs.readFile(filePath, (err, content) => {
+        if (err) {
+          sendJson(res, 500, { error: 'Internal Server Error', message: 'Could not read file' });
         } else {
-          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.writeHead(200, { 'Content-Type': contentType });
           res.end(content);
         }
       });
-      return;
-    }
-
-    fs.readFile(filePath, (err, content) => {
-      if (err) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('500 Internal Server Error');
-      } else {
-        res.writeHead(200, { 'Content-Type': contentType });
-        res.end(content);
-      }
     });
-  });
+    return;
+  }
+
+  // Any other route that reaches here is not found
+  sendJson(res, 404, { error: 'Not Found' });
 });
 
 const os = require('os');

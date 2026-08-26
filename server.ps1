@@ -3,11 +3,6 @@
 
 $port = 8080
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$parentDir = Split-Path -Parent $ScriptDir
-$FrontendDir = Join-Path $parentDir "BG-Frontend"
-if (!(Test-Path $FrontendDir)) {
-    $FrontendDir = Join-Path $parentDir "Frontend"
-}
 $DbDir = Join-Path $ScriptDir "db"
 $UploadsDir = Join-Path $ScriptDir "uploads"
 
@@ -22,9 +17,6 @@ if (!(Test-Path $RequestsPath)) { Set-Content -Path $RequestsPath -Value "[]" -E
 if (!(Test-Path $RegisterPath)) { Set-Content -Path $RegisterPath -Value "[]" -Encoding utf8 }
 
 $MimeTypes = @{
-    ".html" = "text/html"
-    ".css"  = "text/css"
-    ".js"   = "text/javascript"
     ".json" = "application/json"
     ".png"  = "image/png"
     ".jpg"  = "image/jpeg"
@@ -173,8 +165,19 @@ try {
             $res.ContentType = "application/json"
             
             try {
+                # GET /api/test
+                if ($reqPath -eq "/api/test" -and $method -eq "GET") {
+                    $payload = @{
+                        success = $true
+                        message = "Backend is working successfully"
+                        status = "healthy"
+                        timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                    }
+                    $resBytes = [System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Depth 10))
+                    $res.OutputStream.Write($resBytes, 0, $resBytes.Length)
+                }
                 # GET /api/dashboard
-                if ($reqPath -eq "/api/dashboard" -and $method -eq "GET") {
+                elseif ($reqPath -eq "/api/dashboard" -and $method -eq "GET") {
                     $requests = Read-Db "requests"
                     $register = Read-Db "register"
                     
@@ -558,48 +561,37 @@ try {
             continue
         }
 
-        # --- STATIC FILE SERVING ---
-        $filePath = ""
+        # --- STATIC FILE SERVING (Uploads Only) ---
         if ($reqPath.StartsWith("/uploads/")) {
-            # Serve uploads from Backend directory
             $filePath = Join-Path $ScriptDir $reqPath.Replace("/", "\").Substring(1)
-        } else {
-            # Serve files from Frontend directory
-            $subPath = $reqPath.Replace("/", "\")
-            if ($subPath -eq "\") { $subPath = "\index.html" }
-            $filePath = Join-Path $FrontendDir $subPath.Substring(1)
-        }
-
-        if (Test-Path $filePath -PathType Leaf) {
-            $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
-            $contentType = "application/octet-stream"
-            if ($MimeTypes.ContainsKey($ext)) {
-                $contentType = $MimeTypes[$ext]
-            }
-
-            $res.ContentType = $contentType
-            $res.StatusCode = 200
-
-            try {
-                $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
-                $res.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
-            } catch {
-                Write-Host "Error reading file $filePath : $_" -ForegroundColor Red
-                $res.StatusCode = 500
-            }
-        } else {
-            # Handle Single Page App (SPA) fallback to index.html
-            $indexPath = Join-Path $FrontendDir "index.html"
-            if (Test-Path $indexPath) {
-                $res.ContentType = "text/html"
+            if (Test-Path $filePath -PathType Leaf) {
+                $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
+                $contentType = "application/octet-stream"
+                if ($MimeTypes.ContainsKey($ext)) {
+                    $contentType = $MimeTypes[$ext]
+                }
+                $res.ContentType = $contentType
                 $res.StatusCode = 200
-                $fileBytes = [System.IO.File]::ReadAllBytes($indexPath)
-                $res.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
+                try {
+                    $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
+                    $res.OutputStream.Write($fileBytes, 0, $fileBytes.Length)
+                } catch {
+                    Write-Host "Error reading file $filePath : $_" -ForegroundColor Red
+                    $res.StatusCode = 500
+                    $resBytes = [System.Text.Encoding]::UTF8.GetBytes('{"error":"Error reading file"}')
+                    $res.OutputStream.Write($resBytes, 0, $resBytes.Length)
+                }
             } else {
                 $res.StatusCode = 404
-                $resBytes = [System.Text.Encoding]::UTF8.GetBytes("404 File Not Found")
+                $res.ContentType = "application/json"
+                $resBytes = [System.Text.Encoding]::UTF8.GetBytes('{"error":"File not found"}')
                 $res.OutputStream.Write($resBytes, 0, $resBytes.Length)
             }
+        } else {
+            $res.StatusCode = 404
+            $res.ContentType = "application/json"
+            $resBytes = [System.Text.Encoding]::UTF8.GetBytes('{"error":"Not Found"}')
+            $res.OutputStream.Write($resBytes, 0, $resBytes.Length)
         }
 
         $res.Close()

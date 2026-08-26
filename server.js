@@ -73,8 +73,9 @@ function calculateAlertDates(expiryDateStr) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const parsedUrl = url.parse(req.url, true);
-  const reqPath = parsedUrl.pathname;
+  const cleanUrl = req.url.replace(/^\/Bank_Guarantee_Module/i, '') || '/';
+  const parsedUrl = url.parse(cleanUrl, true);
+  const reqPath = parsedUrl.pathname || '/';
   const method = req.method;
 
   console.log(`${method} ${reqPath}`);

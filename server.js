@@ -522,12 +522,149 @@ app.put('/api/register', async (req, res) => {
   }
 });
 
-// --- STATIC FILE SERVING (Uploads) ---
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+const DEFAULT_COST_CENTERS = [
+  'ATS-Byculla Mumbai',
+  'Bitsom Pilani - Kalyan, Mumbai',
+  'BMC - Dahisar Hub',
+  'Gera Imperium Gateway',
+  'Havmor Ice Cream Pvt Ltd - Talegaon',
+  'IICT Campus - Goregaon',
+  'IMCCPLTD- Ghansoli',
+  'Incubation Cent-Kalamboli',
+  'Medical College - Bhojpur',
+  'Medical College - Jalgaon',
+  'Medical College - Satara',
+  'Medical College- Munger',
+  'Metro Bhavan & Staff Quarters (MMRCL) - Mumbai',
+  'NHAI- DMIA',
+  'Phoenix Mall - Mohali',
+  'Police Housing - Kandivali',
+  'Police Housing Goregaon',
+  'Ratnagiri Air Terminal',
+  'Ratnagiri Rly. Platform Beautification',
+  'Redevelopment Of Ravi Shankar Shukla Market Bhopal',
+  'Saibaba Edu. Complex (Shirdi)',
+  'Smart City 1 and 2 - Ratnagiri',
+  'SSChandrpur',
+  'Symbiosis 1320 Hostel Lavale',
+  'Symbiosis Nagpur Hostel',
+  'Symbiosis SIBM Extension Lavale Campus',
+  'Symbiosis World School',
+  'Udaipur Air Terminal'
+];
 
-// 404 Fallback
+// GET /api/cost-centers
+app.get('/api/cost-centers', async (req, res) => {
+  try {
+    let list = await db.readData('cost_centers');
+    if (!list || list.length === 0) {
+      for (const name of DEFAULT_COST_CENTERS) {
+        await db.insertDocument('cost_centers', { name });
+      }
+      list = DEFAULT_COST_CENTERS.map(name => ({ name }));
+    }
+    return res.json(list);
+  } catch (error) {
+    console.error('API Error:', error);
+    return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+// POST /api/cost-centers
+app.post('/api/cost-centers', async (req, res) => {
+  try {
+    const { name } = req.body || {};
+    const cleanName = String(name || '').trim();
+    if (!cleanName) {
+      return res.status(400).json({ success: false, error: 'Cost Center name is required.' });
+    }
+
+    const existing = await db.findOne('cost_centers', { name: cleanName });
+    if (existing) {
+      return res.status(400).json({ success: false, error: 'Cost Center already exists.' });
+    }
+
+    await db.insertDocument('cost_centers', { name: cleanName, createdAt: new Date().toISOString() });
+    return res.status(201).json({ success: true, name: cleanName });
+  } catch (error) {
+    console.error('API Error:', error);
+    return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+// PUT /api/cost-centers
+app.put('/api/cost-centers', async (req, res) => {
+  try {
+    const { oldName, newName } = req.body || {};
+    const cleanOld = String(oldName || '').trim();
+    const cleanNew = String(newName || '').trim();
+
+    if (!cleanOld || !cleanNew) {
+      return res.status(400).json({ success: false, error: 'Both oldName and newName are required.' });
+    }
+
+    await db.updateDocument('cost_centers', { name: cleanOld }, { name: cleanNew });
+
+    // Update in requests
+    const requests = await db.readData('requests');
+    for (const reqDoc of requests) {
+      if (reqDoc.costCenter === cleanOld) {
+        await db.updateDocument('requests', { id: reqDoc.id }, { costCenter: cleanNew });
+      }
+    }
+
+    // Update in register
+    const register = await db.readData('register');
+    for (const bgDoc of register) {
+      if (bgDoc.costCenter === cleanOld) {
+        await db.updateDocument('register', { id: bgDoc.id }, { costCenter: cleanNew });
+      }
+    }
+
+    return res.json({ success: true, oldName: cleanOld, newName: cleanNew });
+  } catch (error) {
+    console.error('API Error:', error);
+    return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+// DELETE /api/cost-centers
+app.delete('/api/cost-centers', async (req, res) => {
+  try {
+    const { name } = req.body || {};
+    const cleanName = String(name || '').trim();
+    if (!cleanName) {
+      return res.status(400).json({ success: false, error: 'Cost Center name is required.' });
+    }
+
+    await db.deleteDocument('cost_centers', { name: cleanName });
+    return res.json({ success: true, name: cleanName });
+  } catch (error) {
+    console.error('API Error:', error);
+    return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+  }
+});
+
+// --- STATIC FILE SERVING ---
+const frontendPath = path.join(__dirname, '../BG-Frontend');
+
+// Serve static assets from BG-Frontend directory (index.html, css, js, etc.)
+app.use(express.static(frontendPath));
+
+// Serve uploads from both backend and frontend directories
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join(frontendPath, 'uploads')));
+
+// Fallback for non-API requests (Serve index.html for frontend views)
 app.use((req, res) => {
-  res.status(404).json({ error: 'Not Found' });
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Endpoint not found' });
+  }
+  res.sendFile(path.join(frontendPath, 'index.html'), (err) => {
+    if (err) {
+      res.status(404).json({ error: 'Not Found' });
+    }
+  });
 });
 
 // Helper for local IP

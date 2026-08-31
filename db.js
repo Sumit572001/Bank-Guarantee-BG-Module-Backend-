@@ -92,25 +92,55 @@ async function initializeDb() {
   }
 }
 
+function readJsonFile(collection) {
+  const filePath = path.join(DB_DIR, `${collection}.json`);
+  if (!fs.existsSync(filePath)) return [];
+  try {
+    const data = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(data || '[]');
+  } catch (e) {
+    return [];
+  }
+}
+
+function writeJsonFile(collection, data) {
+  const filePath = path.join(DB_DIR, `${collection}.json`);
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function readData(collection) {
   try {
     const db = await getDb();
-    // Exclude default MongoDB _id to maintain backward compatibility with JSON structures
-    return await db.collection(collection).find({}, { projection: { _id: 0 } }).toArray();
+    const result = await db.collection(collection).find({}, { projection: { _id: 0 } }).toArray();
+    writeJsonFile(collection, result);
+    return result;
   } catch (error) {
-    console.error(`Error reading ${collection} from MongoDB:`, error);
-    return [];
+    console.error(`Error reading ${collection} from MongoDB, falling back to JSON:`, error.message);
+    return readJsonFile(collection);
   }
 }
 
 async function findOne(collection, query) {
   try {
     const db = await getDb();
-    // Exclude default MongoDB _id to maintain backward compatibility
     return await db.collection(collection).findOne(query, { projection: { _id: 0 } });
   } catch (error) {
-    console.error(`Error finding document in ${collection}:`, error);
-    return null;
+    console.error(`Error finding document in ${collection}:`, error.message);
+    const data = readJsonFile(collection);
+    return data.find(item => {
+      for (const k in query) {
+        if (query[k] && typeof query[k] === 'object' && query[k].$or) {
+          return query[k].$or.some(sub => item[sub.username] === sub.username || item[sub.email] === sub.email);
+        }
+        if (item[k] !== query[k]) return false;
+      }
+      return true;
+    }) || null;
   }
 }
 
@@ -118,26 +148,54 @@ async function insertDocument(collection, document) {
   try {
     const db = await getDb();
     const docToInsert = { ...document };
-    delete docToInsert._id; // Ensure clean insert without conflicting _id
+    delete docToInsert._id;
     await db.collection(collection).insertOne(docToInsert);
-    return true;
   } catch (error) {
-    console.error(`Error inserting document into ${collection} MongoDB:`, error);
-    return false;
+    console.error(`Error inserting document into ${collection} MongoDB:`, error.message);
   }
+  const currentData = readJsonFile(collection);
+  currentData.push(document);
+  writeJsonFile(collection, currentData);
+  return true;
 }
 
 async function updateDocument(collection, query, updatedFields) {
   try {
     const db = await getDb();
     const fieldsToUpdate = { ...updatedFields };
-    delete fieldsToUpdate._id; // Prevent updating/modifying the immutable _id field
+    delete fieldsToUpdate._id;
     await db.collection(collection).updateOne(query, { $set: fieldsToUpdate });
-    return true;
   } catch (error) {
-    console.error(`Error updating document in ${collection} MongoDB:`, error);
-    return false;
+    console.error(`Error updating document in ${collection} MongoDB:`, error.message);
   }
+  const currentData = readJsonFile(collection);
+  const updatedData = currentData.map(item => {
+    let match = true;
+    for (const k in query) {
+      if (item[k] !== query[k]) match = false;
+    }
+    return match ? { ...item, ...updatedFields } : item;
+  });
+  writeJsonFile(collection, updatedData);
+  return true;
+}
+
+async function deleteDocument(collection, query) {
+  try {
+    const db = await getDb();
+    await db.collection(collection).deleteOne(query);
+  } catch (error) {
+    console.error(`Error deleting document from ${collection} MongoDB:`, error.message);
+  }
+  const currentData = readJsonFile(collection);
+  const filtered = currentData.filter(item => {
+    for (const k in query) {
+      if (item[k] === query[k]) return false;
+    }
+    return true;
+  });
+  writeJsonFile(collection, filtered);
+  return true;
 }
 
 async function generateId(collection, prefix) {
@@ -206,6 +264,7 @@ module.exports = {
   findOne,
   insertDocument,
   updateDocument,
+  deleteDocument,
   generateId,
   saveAttachment,
   UPLOADS_DIR

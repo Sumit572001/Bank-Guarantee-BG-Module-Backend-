@@ -69,6 +69,7 @@ app.post('/api/auth/login', async (req, res) => {
     const body = req.body || {};
     const username = String(body.username || '').trim().toLowerCase();
     const password = String(body.password || '');
+    const selectedCompanyRole = String(body.companyRole || body.roleOption || 'EPC').toUpperCase();
 
     if (!username || !password) {
       return res.status(400).json({ success: false, error: 'Username/Email and Password are required.' });
@@ -85,6 +86,14 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Invalid Username/Email or Password.' });
     }
 
+    const userRole = (user.companyRole || selectedCompanyRole).toUpperCase();
+    if (user.companyRole && userRole !== selectedCompanyRole) {
+      return res.status(401).json({
+        success: false,
+        error: `Account role mismatch. This account belongs to '${user.companyRole}' division, but '${selectedCompanyRole}' was selected.`
+      });
+    }
+
     return res.json({
       success: true,
       user: {
@@ -92,6 +101,7 @@ app.post('/api/auth/login', async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        companyRole: userRole,
         isLoggedIn: true
       }
     });
@@ -104,8 +114,9 @@ app.post('/api/auth/login', async (req, res) => {
 // GET /api/dashboard - Aggregates
 app.get('/api/dashboard', async (req, res) => {
   try {
-    const requests = await db.readData('requests');
-    const register = await db.readData('register');
+    const companyRole = String(req.query.companyRole || 'EPC').toUpperCase();
+    const requests = await db.readData('requests', { companyRole: companyRole });
+    const register = await db.readData('register', { companyRole: companyRole });
 
     const now = new Date();
     const thirtyDaysFromNow = new Date();
@@ -179,7 +190,8 @@ app.get('/api/dashboard', async (req, res) => {
 // GET /api/requests
 app.get('/api/requests', async (req, res) => {
   try {
-    const requests = await db.readData('requests');
+    const companyRole = String(req.query.companyRole || 'EPC').toUpperCase();
+    const requests = await db.readData('requests', { companyRole: companyRole });
     return res.json(requests);
   } catch (error) {
     console.error('API Error:', error);
@@ -211,6 +223,8 @@ app.post('/api/requests', async (req, res) => {
 
     const newRequest = {
       id: await db.generateId('requests', 'REQ'),
+      companyRole: String(body.companyRole || 'EPC').toUpperCase(),
+      companyName: body.companyName || '',
       requestType: body.requestType || 'New',
       bgNumberToRenew: body.bgNumberToRenew || '',
       registerIdToRenew: body.registerIdToRenew || '',
@@ -310,6 +324,8 @@ app.put('/api/requests', async (req, res) => {
       } else {
         const newBg = {
           id: await db.generateId('register', 'BG'),
+          companyRole: request.companyRole || 'EPC',
+          companyName: request.companyName || '',
           requestId: request.id,
           bgNumber: '',
           bgType: request.bgType,
@@ -353,7 +369,8 @@ app.put('/api/requests', async (req, res) => {
 // GET /api/register
 app.get('/api/register', async (req, res) => {
   try {
-    const register = await db.readData('register');
+    const companyRole = String(req.query.companyRole || 'EPC').toUpperCase();
+    const register = await db.readData('register', { companyRole: companyRole });
     return res.json(register);
   } catch (error) {
     console.error('API Error:', error);
@@ -387,6 +404,8 @@ app.post('/api/register', async (req, res) => {
 
     const newBg = {
       id: await db.generateId('register', 'BG'),
+      companyRole: String(body.companyRole || 'EPC').toUpperCase(),
+      companyName: body.companyName || '',
       requestId: body.requestId || '',
       bgNumber: body.bgNumber || '',
       bgType: body.bgType || 'EMD',
@@ -506,6 +525,7 @@ app.put('/api/register', async (req, res) => {
       releasedDate: body.releasedDate !== undefined ? body.releasedDate : bgEntry.releasedDate,
       remarks: body.remarks !== undefined ? body.remarks : bgEntry.remarks,
       attachments: processedAttachments,
+      companyName: body.companyName !== undefined ? body.companyName : (bgEntry.companyName || ''),
       marginMoney: body.marginMoney !== undefined ? parseFloat(body.marginMoney) : bgEntry.marginMoney,
       fdrNo: body.fdrNo !== undefined ? body.fdrNo : bgEntry.fdrNo,
       costCenter: body.costCenter !== undefined ? body.costCenter : bgEntry.costCenter,
@@ -650,10 +670,13 @@ const frontendPath = path.join(__dirname, '../BG-Frontend');
 
 // Serve static assets from BG-Frontend directory (index.html, css, js, etc.)
 app.use(express.static(frontendPath));
+app.use('/Bank_Guarantee_Module', express.static(frontendPath));
 
 // Serve uploads from both backend and frontend directories
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/uploads', express.static(path.join(frontendPath, 'uploads')));
+app.use('/Bank_Guarantee_Module/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/Bank_Guarantee_Module/uploads', express.static(path.join(frontendPath, 'uploads')));
 
 // Fallback for non-API requests (Serve index.html for frontend views)
 app.use((req, res) => {
@@ -689,12 +712,24 @@ async function startServer() {
       const localIp = getLocalIpAddress();
       console.log(`=======================================================`);
       console.log(`  Bank Guarantee Module Server started successfully!   `);
+      console.log(`  (Backend API & Frontend served together automatically) `);
       console.log(`=======================================================`);
-      console.log(`Local URL:         http://localhost:${PORT}/`);
+      console.log(`Local URL (Frontend & API): http://localhost:${PORT}/`);
       if (localIp) {
-        console.log(`Local Network URL: http://${localIp}:${PORT}/`);
+        console.log(`Local Network URL:         http://${localIp}:${PORT}/`);
       }
       console.log(`=======================================================`);
+
+      // Automatically open frontend in browser window
+      const startCmd = process.platform === 'win32' ? `start http://localhost:${PORT}/` :
+                       process.platform === 'darwin' ? `open http://localhost:${PORT}/` :
+                       `xdg-open http://localhost:${PORT}/`;
+      const { exec } = require('child_process');
+      exec(startCmd, (err) => {
+        if (err) {
+          console.log(`Notice: Frontend available at http://localhost:${PORT}/`);
+        }
+      });
     });
   } catch (error) {
     console.error('Failed to initialize database. Server cannot start.', error);

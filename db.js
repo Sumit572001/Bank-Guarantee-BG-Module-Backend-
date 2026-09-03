@@ -35,54 +35,77 @@ async function initializeDb() {
     const db = await getDb();
     console.log('Checking database status for automatic migration & seeding...');
 
-    // Seed default users if the MongoDB collection is empty
-    const usersCount = await db.collection('users').countDocuments();
-    if (usersCount === 0) {
-      const defaultUsers = [
-        {
-          username: 'shubham_kothari',
-          password: 'nyati#2026',
-          name: 'Shubham Kothari',
-          email: 'shubham.kothari@nyatigroup.com',
-          role: 'Finance Manager'
-        }
-      ];
-      await db.collection('users').insertMany(defaultUsers);
-      console.log('Successfully seeded default user accounts into MongoDB.');
-    } else {
-      console.log(`MongoDB 'users' collection already contains ${usersCount} documents.`);
+    // Seed/Update default users in MongoDB
+    const defaultUsers = [
+      {
+        username: 'shubham_kothari',
+        password: 'nyati#2026',
+        name: 'Shubham Kothari',
+        email: 'shubham.kothari@nyatigroup.com',
+        role: 'Finance Manager',
+        companyRole: 'EPC'
+      },
+      {
+        username: 're_user',
+        password: 'nyati#2026',
+        name: 'RE Manager',
+        email: 're.manager@nyatigroup.com',
+        role: 'Finance Manager',
+        companyRole: 'RE'
+      }
+    ];
+
+    for (const u of defaultUsers) {
+      const existing = await db.collection('users').findOne({ username: u.username });
+      if (!existing) {
+        await db.collection('users').insertOne({ ...u });
+        console.log(`Seeded user account '${u.username}' (${u.companyRole}) into MongoDB.`);
+      } else if (!existing.companyRole) {
+        await db.collection('users').updateOne({ username: u.username }, { $set: { companyRole: u.companyRole } });
+        console.log(`Updated user account '${u.username}' with companyRole '${u.companyRole}'.`);
+      }
     }
 
-    // Migrate requests if the MongoDB collection is empty
+    // Tag legacy requests without companyRole as 'EPC'
+    const unassignedRequests = await db.collection('requests').countDocuments({ companyRole: { $exists: false } });
+    if (unassignedRequests > 0) {
+      await db.collection('requests').updateMany({ companyRole: { $exists: false } }, { $set: { companyRole: 'EPC' } });
+      console.log(`Tagged ${unassignedRequests} legacy requests with companyRole 'EPC'.`);
+    }
+
+    // Tag legacy register entries without companyRole as 'EPC'
+    const unassignedRegister = await db.collection('register').countDocuments({ companyRole: { $exists: false } });
+    if (unassignedRegister > 0) {
+      await db.collection('register').updateMany({ companyRole: { $exists: false } }, { $set: { companyRole: 'EPC' } });
+      console.log(`Tagged ${unassignedRegister} legacy register entries with companyRole 'EPC'.`);
+    }
+
+    // Migrate requests if empty
     const requestsCount = await db.collection('requests').countDocuments();
     if (requestsCount === 0) {
       const filePath = path.join(DB_DIR, 'requests.json');
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf8');
-        const data = JSON.parse(content || '[]');
+        const data = JSON.parse(content || '[]').map(item => ({ ...item, companyRole: item.companyRole || 'EPC' }));
         if (data.length > 0) {
           await db.collection('requests').insertMany(data);
-          console.log(`Successfully migrated ${data.length} requests from JSON file to MongoDB.`);
+          console.log(`Migrated ${data.length} requests from JSON to MongoDB.`);
         }
       }
-    } else {
-      console.log(`MongoDB 'requests' collection already contains ${requestsCount} documents.`);
     }
 
-    // Migrate register if the MongoDB collection is empty
+    // Migrate register if empty
     const registerCount = await db.collection('register').countDocuments();
     if (registerCount === 0) {
       const filePath = path.join(DB_DIR, 'register.json');
       if (fs.existsSync(filePath)) {
         const content = fs.readFileSync(filePath, 'utf8');
-        const data = JSON.parse(content || '[]');
+        const data = JSON.parse(content || '[]').map(item => ({ ...item, companyRole: item.companyRole || 'EPC' }));
         if (data.length > 0) {
           await db.collection('register').insertMany(data);
-          console.log(`Successfully migrated ${data.length} register entries from JSON file to MongoDB.`);
+          console.log(`Migrated ${data.length} register entries from JSON to MongoDB.`);
         }
       }
-    } else {
-      console.log(`MongoDB 'register' collection already contains ${registerCount} documents.`);
     }
 
     console.log('Database initialization completed.');
@@ -113,15 +136,22 @@ function writeJsonFile(collection, data) {
   }
 }
 
-async function readData(collection) {
+async function readData(collection, filterQuery = {}) {
   try {
     const db = await getDb();
-    const result = await db.collection(collection).find({}, { projection: { _id: 0 } }).toArray();
-    writeJsonFile(collection, result);
+    const result = await db.collection(collection).find(filterQuery, { projection: { _id: 0 } }).toArray();
     return result;
   } catch (error) {
     console.error(`Error reading ${collection} from MongoDB, falling back to JSON:`, error.message);
-    return readJsonFile(collection);
+    const data = readJsonFile(collection);
+    if (!filterQuery || Object.keys(filterQuery).length === 0) return data;
+    return data.filter(item => {
+      for (const k in filterQuery) {
+        const itemVal = item[k] || (k === 'companyRole' ? 'EPC' : undefined);
+        if (itemVal !== filterQuery[k]) return false;
+      }
+      return true;
+    });
   }
 }
 

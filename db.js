@@ -35,6 +35,9 @@ async function initializeDb() {
     const db = await getDb();
     console.log('Checking database status for automatic migration & seeding...');
 
+    // Delete legacy re_user account if it exists
+    await db.collection('users').deleteMany({ username: 're_user' });
+
     // Seed/Update default users in MongoDB
     const defaultUsers = [
       {
@@ -46,10 +49,10 @@ async function initializeDb() {
         companyRole: 'EPC'
       },
       {
-        username: 're_user',
+        username: 'vinod_deore',
         password: 'nyati#2026',
-        name: 'RE Manager',
-        email: 're.manager@nyatigroup.com',
+        name: 'Vinod Deore',
+        email: 'vinod.deore@nyatigroup.com',
         role: 'Finance Manager',
         companyRole: 'RE'
       }
@@ -60,9 +63,20 @@ async function initializeDb() {
       if (!existing) {
         await db.collection('users').insertOne({ ...u });
         console.log(`Seeded user account '${u.username}' (${u.companyRole}) into MongoDB.`);
-      } else if (!existing.companyRole) {
-        await db.collection('users').updateOne({ username: u.username }, { $set: { companyRole: u.companyRole } });
-        console.log(`Updated user account '${u.username}' with companyRole '${u.companyRole}'.`);
+      } else {
+        await db.collection('users').updateOne(
+          { username: u.username },
+          {
+            $set: {
+              password: u.password,
+              name: existing.name || u.name,
+              email: existing.email || u.email,
+              role: existing.role || u.role,
+              companyRole: u.companyRole
+            }
+          }
+        );
+        console.log(`Updated user account '${u.username}' with complete attributes in MongoDB.`);
       }
     }
 

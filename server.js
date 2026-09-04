@@ -75,10 +75,11 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Username/Email and Password are required.' });
     }
 
+    const escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const user = await db.findOne('users', {
       $or: [
-        { username: username },
-        { email: username }
+        { username: { $regex: new RegExp(`^${escapedUsername}$`, 'i') } },
+        { email: { $regex: new RegExp(`^${escapedUsername}$`, 'i') } }
       ]
     });
 
@@ -98,9 +99,9 @@ app.post('/api/auth/login', async (req, res) => {
       success: true,
       user: {
         username: user.username,
-        name: user.name,
-        email: user.email,
-        role: user.role,
+        name: user.name || user.username || 'Vinod Deore',
+        email: user.email || '',
+        role: user.role || 'Finance Manager',
         companyRole: userRole,
         isLoggedIn: true
       }

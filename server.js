@@ -76,33 +76,48 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const user = await db.findOne('users', {
+    let user = await db.findOne('users', {
       $or: [
         { username: { $regex: new RegExp(`^${escapedUsername}$`, 'i') } },
         { email: { $regex: new RegExp(`^${escapedUsername}$`, 'i') } }
       ]
     });
 
+    if (!user) {
+      await db.initializeDb();
+      user = await db.findOne('users', {
+        $or: [
+          { username: { $regex: new RegExp(`^${escapedUsername}$`, 'i') } },
+          { email: { $regex: new RegExp(`^${escapedUsername}$`, 'i') } }
+        ]
+      });
+    }
+
     if (!user || user.password !== password) {
       return res.status(401).json({ success: false, error: 'Invalid Username/Email or Password.' });
     }
 
-    const userRole = (user.companyRole || selectedCompanyRole).toUpperCase();
-    if (user.companyRole && userRole !== selectedCompanyRole) {
-      return res.status(401).json({
-        success: false,
-        error: `Account role mismatch. This account belongs to '${user.companyRole}' division, but '${selectedCompanyRole}' was selected.`
-      });
+    const rawCompanyRole = String(user.companyRole || 'ALL').toUpperCase();
+    let sessionCompanyRole = selectedCompanyRole;
+
+    if (rawCompanyRole !== 'ALL' && rawCompanyRole !== 'BOTH' && rawCompanyRole !== '*') {
+      const allowedRoles = rawCompanyRole.split(/[,|\s]+/).map(r => r.trim());
+      if (!allowedRoles.includes(selectedCompanyRole)) {
+        return res.status(401).json({
+          success: false,
+          error: `Account role mismatch. This account belongs to '${user.companyRole}' division, but '${selectedCompanyRole}' was selected.`
+        });
+      }
     }
 
     return res.json({
       success: true,
       user: {
         username: user.username,
-        name: user.name || user.username || 'Vinod Deore',
+        name: user.name || user.username,
         email: user.email || '',
         role: user.role || 'Finance Manager',
-        companyRole: userRole,
+        companyRole: sessionCompanyRole,
         isLoggedIn: true
       }
     });

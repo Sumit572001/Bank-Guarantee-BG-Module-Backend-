@@ -54,30 +54,25 @@ async function initializeDb() {
         name: 'Vinod Deore',
         email: 'vinod.deore@nyatigroup.com',
         role: 'Finance Manager',
-        companyRole: 'RE'
+        companyRole: 'ALL'
+      },
+      {
+        username: 'gargi_amrujkar',
+        password: 'nyati#2026',
+        name: 'Gargi Amrujkar',
+        email: 'gargi.amrujkar@nyatigroup.com',
+        role: 'Finance Manager',
+        companyRole: 'ALL'
       }
     ];
 
     for (const u of defaultUsers) {
-      const existing = await db.collection('users').findOne({ username: u.username });
-      if (!existing) {
-        await db.collection('users').insertOne({ ...u });
-        console.log(`Seeded user account '${u.username}' (${u.companyRole}) into MongoDB.`);
-      } else {
-        await db.collection('users').updateOne(
-          { username: u.username },
-          {
-            $set: {
-              password: u.password,
-              name: existing.name || u.name,
-              email: existing.email || u.email,
-              role: existing.role || u.role,
-              companyRole: u.companyRole
-            }
-          }
-        );
-        console.log(`Updated user account '${u.username}' with complete attributes in MongoDB.`);
-      }
+      await db.collection('users').updateOne(
+        { username: u.username },
+        { $set: u },
+        { upsert: true }
+      );
+      console.log(`Seeded/Updated user account '${u.username}' (${u.companyRole}) in MongoDB.`);
     }
 
     // Tag legacy requests without companyRole as 'EPC'

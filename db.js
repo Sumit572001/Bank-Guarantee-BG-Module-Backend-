@@ -117,6 +117,39 @@ async function initializeDb() {
       }
     }
 
+    // Auto-normalize register costCenter fields
+    try {
+      const regFilePath = path.join(DB_DIR, 'register.json');
+      if (fs.existsSync(regFilePath)) {
+        const content = fs.readFileSync(regFilePath, 'utf8');
+        const regData = JSON.parse(content || '[]');
+        let updated = false;
+        regData.forEach(item => {
+          const mapped = mapSiteToCostCenter(item.siteName, item.costCenter);
+          if (mapped !== item.costCenter) {
+            item.costCenter = mapped;
+            updated = true;
+          }
+        });
+        if (updated) {
+          fs.writeFileSync(regFilePath, JSON.stringify(regData, null, 2), 'utf8');
+          console.log('Normalized register.json costCenter fields.');
+        }
+      }
+
+      if (dbInstance) {
+        const mongoReg = await db.collection('register').find({}).toArray();
+        for (const doc of mongoReg) {
+          const mapped = mapSiteToCostCenter(doc.siteName, doc.costCenter);
+          if (mapped !== doc.costCenter) {
+            await db.collection('register').updateOne({ id: doc.id }, { $set: { costCenter: mapped } });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error normalizing register costCenter fields:', err.message);
+    }
+
     console.log('Database initialization completed.');
   } catch (error) {
     console.error('Database initialization failed:', error);
@@ -135,6 +168,37 @@ function readJsonFile(collection) {
   }
 }
 
+function mapSiteToCostCenter(siteName, currentCc) {
+  const site = String(siteName || '').trim();
+  if (!site) return currentCc || 'Admin';
+  const lower = site.toLowerCase();
+  if (lower.includes('shirdi')) return 'Saibaba Edu. Complex (Shirdi)';
+  if (lower.includes('goregaon')) return 'Police Housing Goregaon';
+  if (lower.includes('chandrapur') || lower.includes('chandrpur')) return 'SSChandrpur';
+  if (lower.includes('nhai')) return 'NHAI- DMIA';
+  if (lower.includes('bhojpur')) return 'Medical College - Bhojpur';
+  if (lower.includes('kandivali')) return 'Police Housing - Kandivali';
+  if (lower.includes('munger')) return 'Medical College- Munger';
+  if (lower.includes('ratnagiri air')) return 'Ratnagiri Air Terminal';
+  if (lower.includes('symbiosis world')) return 'Symbiosis World School';
+  if (lower.includes('havmor')) return 'Havmor Ice Cream Pvt Ltd - Talegaon';
+  if (lower.includes('dahisar')) return 'BMC - Dahisar Hub';
+  if (lower.includes('metro bhavan') || lower.includes('mmrcl')) return 'Metro Bhavan & Staff Quarters (MMRCL) - Mumbai';
+  if (lower.includes('bhopal')) return 'Redevelopment Of Ravi Shankar Shukla Market Bhopal';
+  if (lower.includes('udaipur')) return 'Udaipur Air Terminal';
+  if (lower.includes('bitsom')) return 'Bitsom Pilani - Kalyan, Mumbai';
+  if (lower.includes('satara')) return 'Medical College - Satara';
+  if (lower.includes('kalamboli')) return 'Incubation Cent-Kalamboli';
+  if (lower.includes('smart city')) return 'Smart City 1 and 2 - Ratnagiri';
+  if (lower.includes('gera')) return 'Gera Imperium Gateway';
+  if (lower.includes('nagpur')) return 'Symbiosis Nagpur Hostel';
+  if (lower.includes('1320 hostel')) return 'Symbiosis 1320 Hostel Lavale';
+  if (lower.includes('sibm')) return 'Symbiosis SIBM Extension Lavale Campus';
+  if (lower.includes('kanpur')) return 'Admin';
+  if (lower.includes('admin')) return 'Admin';
+  return (currentCc && currentCc !== 'Pune Head Office (CC-101)') ? currentCc : site;
+}
+
 function writeJsonFile(collection, data) {
   const filePath = path.join(DB_DIR, `${collection}.json`);
   try {
@@ -148,11 +212,23 @@ function writeJsonFile(collection, data) {
 async function readData(collection, filterQuery = {}) {
   try {
     const db = await getDb();
-    const result = await db.collection(collection).find(filterQuery, { projection: { _id: 0 } }).toArray();
+    let result = await db.collection(collection).find(filterQuery, { projection: { _id: 0 } }).toArray();
+    if (collection === 'register') {
+      result = result.map(item => ({
+        ...item,
+        costCenter: mapSiteToCostCenter(item.siteName, item.costCenter)
+      }));
+    }
     return result;
   } catch (error) {
     console.error(`Error reading ${collection} from MongoDB, falling back to JSON:`, error.message);
-    const data = readJsonFile(collection);
+    let data = readJsonFile(collection);
+    if (collection === 'register') {
+      data = data.map(item => ({
+        ...item,
+        costCenter: mapSiteToCostCenter(item.siteName, item.costCenter)
+      }));
+    }
     if (!filterQuery || Object.keys(filterQuery).length === 0) return data;
     return data.filter(item => {
       for (const k in filterQuery) {

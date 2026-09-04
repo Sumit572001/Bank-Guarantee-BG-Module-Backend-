@@ -559,6 +559,7 @@ app.put('/api/register', async (req, res) => {
 });
 
 const DEFAULT_COST_CENTERS = [
+  'Admin',
   'ATS-Byculla Mumbai',
   'Bitsom Pilani - Kalyan, Mumbai',
   'BMC - Dahisar Hub',
@@ -576,6 +577,7 @@ const DEFAULT_COST_CENTERS = [
   'Phoenix Mall - Mohali',
   'Police Housing - Kandivali',
   'Police Housing Goregaon',
+  'Pune Head Office (CC-101)',
   'Ratnagiri Air Terminal',
   'Ratnagiri Rly. Platform Beautification',
   'Redevelopment Of Ravi Shankar Shukla Market Bhopal',
